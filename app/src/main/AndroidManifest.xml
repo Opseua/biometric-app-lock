@@ -72,8 +72,7 @@
 
         <receiver
             android:name=".receiver.LockCommandReceiver"
-            android:exported="true"
-            android:permission="android.permission.DUMP">
+            android:exported="true">
             <intent-filter>
                 <action android:name="eu.hxreborn.biometricapplock.action.LOCK" />
                 <action android:name="eu.hxreborn.biometricapplock.action.UNLOCK" />
