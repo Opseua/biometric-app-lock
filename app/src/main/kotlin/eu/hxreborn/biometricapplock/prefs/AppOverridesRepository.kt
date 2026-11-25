@@ -70,6 +70,8 @@ class AppOverridesRepository(
             authMethods = local.getIntOrNull(authMethodsKey(pkg)),
         )
 
+    fun current(pkg: String): AppOverrides = currentOverrides(pkg)
+
     fun authMethods(pkg: String): Int? = local.getIntOrNull(authMethodsKey(pkg))
 
     fun observe(pkg: String): Flow<AppOverrides> =
