@@ -13,6 +13,19 @@ private const val LOCK_CMD_TAG = "BiometricAppLock"
 private const val LOCK_CMD_LOCK = "eu.hxreborn.biometricapplock.action.LOCK"
 private const val LOCK_CMD_UNLOCK = "eu.hxreborn.biometricapplock.action.UNLOCK"
 
+/**
+ * Extras:
+ *  - pkg:      package name (required)
+ *  - activity: one or more activities separated by comma (optional).
+ *              Names starting with "." are expanded with the package name.
+ *              Without it, the whole app is locked/unlocked.
+ *  - user:     user id (optional, default 0)
+ *
+ * Example:
+ *  am broadcast -a eu.hxreborn.biometricapplock.action.LOCK \
+ *      --es pkg com.example.app \
+ *      --es activity ".MainActivity,.SettingsActivity,com.example.app.other.FooActivity"
+ */
 class LockCommandReceiver : BroadcastReceiver() {
     override fun onReceive(
         context: Context,
@@ -27,9 +40,14 @@ class LockCommandReceiver : BroadcastReceiver() {
         val pkg = intent.getStringExtra("pkg")?.trim().orEmpty()
         if (!isValidPackage(pkg)) return ignore("invalid pkg '$pkg'")
         val user = intent.userId() ?: return ignore("invalid user")
-        val rawActivity = intent.getStringExtra("activity")?.trim()?.takeIf { it.isNotEmpty() }
-        val activity = if (rawActivity?.startsWith(".") == true) pkg + rawActivity else rawActivity
-        if (activity != null && !isValidClass(activity)) return ignore("invalid activity")
+
+        // empty set = whole app. If the extra was given but nothing valid came out of it,
+        // abort instead of silently falling back to locking/unlocking the whole app.
+        val rawActivity = intent.getStringExtra("activity")
+        val requested = parseActivities(pkg, rawActivity)
+        if (!rawActivity.isNullOrBlank() && requested.isEmpty()) {
+            return ignore("no valid activity in '$rawActivity'")
+        }
 
         val pending = goAsync()
         val app = App.from(context)
@@ -37,7 +55,7 @@ class LockCommandReceiver : BroadcastReceiver() {
             try {
                 // on a cold start the Xposed service may not be bound yet
                 app.awaitService(3_000)
-                handle(context, app, lock, pkg, user, activity)
+                handle(context, app, lock, pkg, user, requested)
             } catch (t: Throwable) {
                 Log.w(LOCK_CMD_TAG, "lock command failed", t)
             } finally {
@@ -46,20 +64,42 @@ class LockCommandReceiver : BroadcastReceiver() {
         }
     }
 
+    private fun parseActivities(
+        pkg: String,
+        raw: String?,
+    ): Set<String> {
+        if (raw.isNullOrBlank()) return emptySet()
+        val result = linkedSetOf<String>()
+        for (part in raw.split(',')) {
+            val name = part.trim()
+            if (name.isEmpty()) continue
+            val full = if (name.startsWith(".")) pkg + name else name
+            if (isValidClass(full)) result += full else ignore("invalid activity '$name'")
+        }
+        return result
+    }
+
     private fun handle(
         context: Context,
         app: App,
         lock: Boolean,
         pkg: String,
         user: Int,
-        activity: String?,
+        requested: Set<String>,
     ) {
-        if (lock && user == 0) {
+        // The package manager of this process only sees user 0, so existence
+        // can only be verified there.
+        var activities = requested
+        if (user == 0) {
             val declared = declaredActivities(context, pkg) ?: return ignore("not installed: $pkg")
-            if (activity != null && activity !in declared) {
-                return ignore("$pkg has no activity $activity")
+            if (activities.isNotEmpty()) {
+                val missing = activities.filterNot { it in declared }
+                missing.forEach { ignore("$pkg has no activity $it") }
+                activities = activities - missing.toSet()
+                if (activities.isEmpty()) return ignore("none of the activities exist in $pkg")
             }
         }
+
         val key = "$pkg:$user"
         val prefs = app.prefsRepository
         val overrides = app.appOverridesRepository
@@ -74,7 +114,7 @@ class LockCommandReceiver : BroadcastReceiver() {
             overrides.setLockListedActivities(key, false)
         }
 
-        if (activity == null) {
+        if (activities.isEmpty()) {
             if (lock) {
                 if (current.lockListedActivities) clearActivities()
                 saveLocked(locked + key)
@@ -90,13 +130,18 @@ class LockCommandReceiver : BroadcastReceiver() {
                 return ignore("$key uses 'allow checked' activities, clear them in the app first")
             }
             overrides.setLockListedActivities(key, true)
-            overrides.setListedActivities(key, current.listedActivities + activity)
+            overrides.setListedActivities(key, current.listedActivities + activities)
             saveLocked(locked + key)
         } else {
-            if (!current.lockListedActivities || activity !in current.listedActivities) {
-                return ignore("$activity is not in the locked list of $key")
+            if (!current.lockListedActivities) {
+                return ignore("$key has no locked activity list")
             }
-            val remaining = current.listedActivities - activity
+            // unlocking only makes sense for activities that are currently in the locked list
+            val toRemove = activities.filter { it in current.listedActivities }.toSet()
+            (activities - toRemove).forEach { ignore("$it is not in the locked list of $key") }
+            if (toRemove.isEmpty()) return
+
+            val remaining = current.listedActivities - toRemove
             if (remaining.isEmpty()) {
                 saveLocked(locked - key)
                 clearActivities()
