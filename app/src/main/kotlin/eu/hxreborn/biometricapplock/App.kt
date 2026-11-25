@@ -99,6 +99,11 @@ class App :
         Log.d(TAG, "listener remove")
     }
 
+    fun awaitService(timeoutMs: Long) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (mService == null && System.currentTimeMillis() < deadline) Thread.sleep(50)
+    }
+
     companion object {
         private const val TAG = "BiometricAppLock"
 
