@@ -7,14 +7,20 @@ import android.content.pm.PackageManager
 import android.util.Log
 import eu.hxreborn.biometricapplock.App
 import eu.hxreborn.biometricapplock.prefs.Prefs
+import java.security.MessageDigest
 import kotlin.concurrent.thread
 
 private const val LOCK_CMD_TAG = "BiometricAppLock"
 private const val LOCK_CMD_LOCK = "eu.hxreborn.biometricapplock.action.LOCK"
 private const val LOCK_CMD_UNLOCK = "eu.hxreborn.biometricapplock.action.UNLOCK"
 
+// Any app can send these broadcasts, so this token is the only protection.
+// Change it and never publish the real value in a public repository.
+private const val LOCK_CMD_TOKEN = "RQm3GotdXBA9bgN0"
+
 /**
  * Extras:
+ *  - token:    secret token (required, must match LOCK_CMD_TOKEN)
  *  - pkg:      package name (required)
  *  - activity: one or more activities separated by comma (optional).
  *              Names starting with "." are expanded with the package name.
@@ -23,6 +29,7 @@ private const val LOCK_CMD_UNLOCK = "eu.hxreborn.biometricapplock.action.UNLOCK"
  *
  * Example:
  *  am broadcast -a eu.hxreborn.biometricapplock.action.LOCK \
+ *      --es token "<token>" \
  *      --es pkg com.example.app \
  *      --es activity ".MainActivity,.SettingsActivity,com.example.app.other.FooActivity"
  */
@@ -37,6 +44,7 @@ class LockCommandReceiver : BroadcastReceiver() {
                 LOCK_CMD_UNLOCK -> false
                 else -> return
             }
+        if (!isValidToken(intent.getStringExtra("token"))) return ignore("invalid token")
         val pkg = intent.getStringExtra("pkg")?.trim().orEmpty()
         if (!isValidPackage(pkg)) return ignore("invalid pkg '$pkg'")
         val user = intent.userId() ?: return ignore("invalid user")
@@ -172,6 +180,10 @@ class LockCommandReceiver : BroadcastReceiver() {
         if (asInt >= 0) return asInt
         return getStringExtra("user")?.toIntOrNull()?.takeIf { it >= 0 }
     }
+
+    private fun isValidToken(given: String?): Boolean =
+        given != null &&
+            MessageDigest.isEqual(given.toByteArray(Charsets.UTF_8), LOCK_CMD_TOKEN.toByteArray(Charsets.UTF_8))
 
     private fun isValidPackage(name: String) =
         '.' in name &&
